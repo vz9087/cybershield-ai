@@ -1,0 +1,16 @@
+# ==============================================================================
+# CyberShield AI — Machine Learning & Python Engine Dependencies
+# ==============================================================================
+# Core Scientific and Machine Learning Libraries
+scikit-learn>=1.4.0
+numpy>=1.26.0
+joblib>=1.3.0
+
+# PDF Generation and Cryptographic Utilities
+reportlab>=4.1.0
+
+# HTTP and API Integration
+requests>=2.31.0
+
+# Automated Testing
+pytest>=8.0.0

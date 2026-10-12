@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.vite/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Testing
+coverage/
+.pytest_cache/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# ML models & data
+ml/models/
+*.h5
+*.pkl
+*.joblib
+
+# Temporary
+tmp/
+temp/
+*.tmp
