@@ -1,5 +1,7 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
+
 import { createServer } from "http";
 import { randomBytes } from "node:crypto";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -25,7 +27,18 @@ process.on("unhandledRejection", (reason) => {
 
 async function startServer() {
   const app = express();
+  app.use(cors({
+    origin: [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      /^chrome-extension:\/\//,
+    ],
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "X-CSRF-Token", "Authorization"],
+  }));
   const server = createServer(app);
+
   app.set("trust proxy", 1);
   app.disable("x-powered-by");
   app.use((_req, res, next) => {
@@ -43,10 +56,20 @@ async function startServer() {
   });
   registerOAuthRoutes(app);
   // tRPC API
-  app.use(
+    app.use(
     "/api/trpc",
     (req, res, next) => {
+      const origin = req.get("Origin") || "";
+      const isExtension = origin.startsWith("chrome-extension://");
       const safeMethod = ["GET", "HEAD", "OPTIONS"].includes(req.method);
+
+      // 1. Chrome extension requests bypass CSRF.
+      //    Extensions don't carry cookies or Sec-Fetch-Site headers.
+      if (isExtension) {
+        return next();
+      }
+
+      // 2. Browser requests use double-submit CSRF.
       if (safeMethod) {
         if (!readCsrfCookie(req.headers.cookie)) {
           res.cookie(CSRF_COOKIE_NAME, randomBytes(32).toString("base64url"), {
@@ -57,10 +80,15 @@ async function startServer() {
             maxAge: 24 * 60 * 60 * 1000,
           });
         }
-      } else if (req.get("Sec-Fetch-Site") === "cross-site" || !hasValidCsrfPair(req.headers.cookie, req.get("X-CSRF-Token"))) {
-        res.status(403).json({ error: "Invalid or missing CSRF token." });
-        return;
+      } else {
+        const crossSite = req.get("Sec-Fetch-Site") === "cross-site";
+        const validPair = hasValidCsrfPair(req.headers.cookie, req.get("X-CSRF-Token"));
+        if (crossSite || !validPair) {
+          res.status(403).json({ error: "Invalid or missing CSRF token." });
+          return;
+        }
       }
+
       next();
     },
     createExpressMiddleware({
