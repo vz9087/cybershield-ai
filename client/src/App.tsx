@@ -6,6 +6,9 @@ import AwarenessPage from "@/pages/AwarenessPage";
 import Dashboard from "@/pages/Dashboard";
 import HistoryPage from "@/pages/HistoryPage";
 import Home from "@/pages/Home";
+import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
+import VerifyOtpPage from "@/pages/VerifyOtpPage";
+import ResetPasswordPage from "@/pages/ResetPasswordPage";
 import NotificationsPage from "@/pages/NotificationsPage";
 import ProfilePage from "@/pages/ProfilePage";
 import ScannerPage from "@/pages/ScannerPage";
@@ -28,27 +31,65 @@ function AuthPage({ admin = false, register = false }: { admin?: boolean; regist
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+
   const login = trpc.auth.login.useMutation({
     onSuccess: async ({ user: account }) => {
       setError("");
       await utils.auth.me.invalidate();
-      navigate(account.role === "admin" ? "/admin/dashboard" : "/dashboard");
+      // If the user came in through the Admin tab, always go to admin dashboard.
+      // Otherwise (User tab), always go to the user dashboard — regardless of role.
+      // This lets admins test user features by signing in through the User tab.
+      if (admin) {
+        navigate("/admin/dashboard");
+      } else {
+        navigate("/dashboard");
+      }
     },
-    onError: result => setError(result.message),
+    onError: (result: any) =>
+      setError(
+        result?.data?.message ??
+        result?.shape?.message ??
+        result?.message ??
+        "Login failed. Please try again."
+      ),
   });
+
   const createAccount = trpc.auth.register.useMutation({
-    onSuccess: async ({ user: account }) => {
+    onSuccess: async () => {
       setError("");
-      toast.success("Welcome to CyberShield AI", { description: "Your account is ready. Review the evidence behind each scan." });
+      toast.success("Account created successfully", {
+        description: "Please sign in with your new credentials.",
+      });
+      // Backend sets a session cookie on register — clear it so the user
+      // must explicitly log in.
+      try {
+        await trpc.auth.logout.useMutation().mutateAsync();
+      } catch { /* ignore */ }
       await utils.auth.me.invalidate();
-      navigate(account.role === "admin" ? "/admin/dashboard" : "/dashboard");
+      navigate("/login");
     },
-    onError: result => setError(result.message),
+    onError: (result: any) =>
+      setError(
+        result?.data?.message ??
+        result?.shape?.message ??
+        result?.message ??
+        "Registration failed."
+      ),
   });
+
   useEffect(() => {
-    if (user?.role === "admin") navigate("/admin/dashboard");
-    else if (user && !admin) navigate("/dashboard");
-    else if (user && admin) setError("This signed-in account does not have administrator access. Sign in with an authorized admin account.");
+    if (!user) return;
+    // Admin tab: only admins allowed. Show error if a regular user is already signed in.
+    if (admin && user.role !== "admin") {
+      setError("Your signed-in account does not have administrator access. Sign in with an authorized admin account.");
+      return;
+    }
+    // Whichever tab the user is on, redirect according to that tab.
+    if (admin) {
+      navigate("/admin/dashboard");
+    } else {
+      navigate("/dashboard");
+    }
   }, [user, admin, navigate]);
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -83,7 +124,22 @@ function AuthPage({ admin = false, register = false }: { admin?: boolean; regist
         <button className="button button-primary button-wide" type="submit" disabled={busy || loading}>{busy ? <><LoaderCircle className="spin" size={15} /> Please wait…</> : register ? "Create account" : admin ? "Login as Admin" : "Login as User"}</button>
       </form>
       <div className="auth-note"><ShieldAlert size={16} /><span>Choosing administrator sign-in does not grant privileges. Admin access is verified against the role stored in the database. Everyone else remains a user.</span></div>
-      <div className="auth-links">{register ? <span>Already have an account? <Link className="text-link" href="/login">Sign in</Link></span> : <span>New to CyberShield? <Link className="text-link" href="/register">Create an account</Link></span>}<Link className="text-link" href="/">Return home</Link></div>
+      <div className="auth-links">
+        {register ? (
+          <span>Already have an account? <Link className="text-link" href="/login">Sign in</Link></span>
+        ) : (
+          <span>
+            New to CyberShield? <Link className="text-link" href="/register">Create an account</Link>
+            {!admin && (
+              <>
+                {" · "}
+                <Link className="text-link" href="/forgot-password">Forgot password?</Link>
+              </>
+            )}
+          </span>
+        )}
+        <Link className="text-link" href="/">Return home</Link>
+      </div>
     </section>
   </main>;
 }
@@ -104,6 +160,9 @@ function Router() {
     <Route path="/login" component={() => <AuthPage />} />
     <Route path="/admin/login" component={() => <AuthPage admin />} />
     <Route path="/register" component={() => <AuthPage register />} />
+    <Route path="/forgot-password" component={ForgotPasswordPage} />
+    <Route path="/verify-otp" component={VerifyOtpPage} />
+    <Route path="/reset-password" component={ResetPasswordPage} />
     <Route path="/dashboard">{() => <UserRoute><Dashboard /></UserRoute>}</Route>
     <Route path="/scanner/:type">{params => <UserRoute><ScannerPage type={params.type} /></UserRoute>}</Route>
     <Route path="/history">{() => <UserRoute><HistoryPage mode="history" /></UserRoute>}</Route>

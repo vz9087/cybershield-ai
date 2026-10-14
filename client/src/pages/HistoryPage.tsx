@@ -1,7 +1,8 @@
 import { trpc } from "@/lib/trpc";
 import { ArrowRight, Download, FileClock, FileText, Image, LoaderCircle, Search, TicketCheck } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link } from "wouter";
+import TicketThread from "@/components/TicketThread";
 
 function savePdf(base64: string, fileName: string) { const bin = atob(base64); const bytes = Uint8Array.from(bin, c => c.charCodeAt(0)); const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" })); const a = document.createElement("a"); a.href = url; a.download = fileName; a.click(); URL.revokeObjectURL(url); }
 const classNameFor = (level: string) => level.toLowerCase().replaceAll(" ", "-");
@@ -24,7 +25,66 @@ export default function HistoryPage({ mode, scanId }: { mode: "history" | "repor
     <div className="page-heading"><div><p className="eyebrow-small">YOUR ACTIVITY</p><h1>{title}</h1><p>{mode === "tickets" ? "Follow the status of items you have reported." : mode === "reports" ? "Download a PDF report for any saved scan." : "Search, filter, sort and review analyses saved to your account."}</p></div>{mode !== "tickets" && mode !== "result" && <Link className="button button-primary" href="/scanner/url"><FileText size={14} /> New scan</Link>}</div>
     {mode === "result" && result.data && <div className="risk-result"><div className="result-banner"><div className="result-score">{result.data.riskScore}<small>%</small></div><div className="result-title"><span className={`risk-pill ${classNameFor(result.data.riskLevel)}`}>{result.data.riskLevel.toUpperCase()} RISK</span><div className={`action-chip ${classNameFor(result.data.riskLevel)}`}>{actionCopy[result.data.action] ?? result.data.action}</div><h2 style={{ marginTop: 8 }}>{result.data.threatType}</h2><p>Scan {result.data.id.slice(0, 8)} · {new Date(result.data.createdAt).toLocaleString()}</p></div></div><div className="result-grid"><div className="result-section"><h3>Indicators and explanation</h3>{result.data.reasons.map((r, i) => <div className="finding" key={i}><span className="finding-dot" />{r}</div>)}</div><div className="result-section"><h3>Recommendation</h3><div className="recommendation">{result.data.recommendation}</div>{result.data.safeAlternative && <div className="banner-note" style={{ marginTop: 10 }}>Possible official alternative: {result.data.safeAlternative}</div>}</div></div><div className="result-actions"><button className="button button-primary button-sm" onClick={() => pdf.mutate({ id: result.data!.id })}><Download size={13} /> Download report</button><Link className="button button-outline button-sm" href="/history">Back to history</Link><Link className="button button-quiet button-sm" href="/dashboard">Back to Dashboard</Link></div></div>}
     {mode !== "tickets" && mode !== "result" && <><div className="search-row"><div style={{ position: "relative", flex: 1 }}><Search size={14} style={{ position: "absolute", left: 12, top: 12, color: "#8a9a94" }} /><input className="input" style={{ paddingLeft: 34 }} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search scans by input, domain or threat…" /></div><select className="select" style={{ maxWidth: 150 }} value={filter} onChange={e => setFilter(e.target.value)}><option value="all">All types</option>{["url", "email", "sms", "link", "apk", "api"].map(t => <option value={t} key={t}>{t.toUpperCase()}</option>)}</select><select className="select" style={{ maxWidth: 160 }} value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort scans"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="risk-high">Highest risk</option></select></div><section className="panel"><div className="table-wrap"><table className="scan-table"><thead><tr><th>INPUT / REFERENCE</th><th>TYPE</th><th>THREAT</th><th>RISK / ACTION</th><th>DATE</th><th>ACTION</th></tr></thead><tbody>{scans.map(s => <tr key={s.id}><td className="scan-input-cell">{s.inputReference}</td><td>{s.scanType.toUpperCase()}</td><td>{s.threatType}</td><td><span className={`risk-pill ${classNameFor(s.riskLevel)}`}>{s.riskScore}% · {s.riskLevel}</span><small className="table-subline">{actionCopy[s.action] ?? s.action}</small></td><td>{new Date(s.createdAt).toLocaleDateString()}</td><td><div style={{ display: "flex", gap: 6 }}><Link className="table-action" href={`/scan/result/${s.id}`}>Details</Link><button className="table-action" aria-label="Download scan report" onClick={() => pdf.mutate({ id: s.id })}><Download size={12} /></button></div></td></tr>)}</tbody></table>{history.isLoading ? <div className="empty-state"><LoaderCircle className="spin" /></div> : scans.length === 0 && <div className="empty-state"><FileClock size={19} /><span>No scans match this view.</span></div>}</div></section></>}
-    {mode === "tickets" && <section className="panel"><div className="table-wrap"><table className="scan-table"><thead><tr><th>TICKET</th><th>CATEGORY</th><th>RISK</th><th>PRIORITY</th><th>STATUS</th><th>CREATED</th><th>EVIDENCE</th></tr></thead><tbody>{(tickets.data ?? []).map(t => <tr key={t.id}><td>#{t.id}</td><td title={t.description}>{t.category}<small className="table-subline">{t.description}</small></td><td>{t.riskScore === null ? "—" : `${t.riskScore}%`}</td><td><span className={`risk-pill ${t.priority === "critical" || t.priority === "high" ? "high" : "neutral"}`}>{t.priority.toUpperCase()}</span></td><td>{ticketLabel(t.status)}</td><td>{new Date(t.createdAt).toLocaleDateString()}</td><td>{t.hasScreenshot ? <button className="table-action" onClick={() => setEvidenceId(t.id)}><Image size={12} /> View</button> : "—"}</td></tr>)}</tbody></table>{tickets.isLoading ? <div className="empty-state"><LoaderCircle className="spin" /></div> : (tickets.data ?? []).length === 0 && <div className="empty-state"><TicketCheck size={19} /><span>You have not submitted a threat report yet. Report an item from its scan result.</span></div>}</div></section>}
+    {mode === "tickets" && (
+      <section className="panel">
+        <div className="table-wrap">
+          <table className="scan-table">
+            <thead>
+              <tr>
+                <th>TICKET</th>
+                <th>CATEGORY</th>
+                <th>RISK</th>
+                <th>PRIORITY</th>
+                <th>STATUS</th>
+                <th>CREATED</th>
+                <th>EVIDENCE</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(tickets.data ?? []).map(t => (
+                <Fragment key={t.id}>
+                  <tr>
+                    <td>#{t.id}</td>
+                    <td title={t.description}>
+                      {t.category}
+                      <small className="table-subline">{t.description}</small>
+                    </td>
+                    <td>{t.riskScore === null ? "—" : `${t.riskScore}%`}</td>
+                    <td>
+                      <span className={`risk-pill ${t.priority === "critical" || t.priority === "high" ? "high" : "neutral"}`}>
+                        {t.priority.toUpperCase()}
+                      </span>
+                    </td>
+                    <td>{ticketLabel(t.status)}</td>
+                    <td>{new Date(t.createdAt).toLocaleDateString()}</td>
+                    <td>
+                      {t.hasScreenshot ? (
+                        <button className="table-action" onClick={() => setEvidenceId(t.id)}>
+                          <Image size={12} /> View
+                        </button>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                  <tr key={`${t.id}-thread`}>
+                    <td colSpan={7} style={{ padding: "0 12px 12px" }}>
+                      <TicketThread ticket={t} />
+                    </td>
+                  </tr>
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+          {tickets.isLoading ? (
+            <div className="empty-state"><LoaderCircle className="spin" /></div>
+          ) : (tickets.data ?? []).length === 0 && (
+            <div className="empty-state">
+              <TicketCheck size={19} />
+              <span>You have not submitted a threat report yet. Report an item from its scan result.</span>
+            </div>
+          )}
+        </div>
+      </section>
+    )}
     {evidenceId !== null && <section className="panel evidence-panel"><div className="panel-head"><div><h2>Private ticket screenshot · #{evidenceId}</h2><p>Visible to you and authorized administrators only.</p></div><button className="button button-quiet button-sm" onClick={() => setEvidenceId(null)}>Close</button></div>{evidence.isLoading ? <div className="empty-state"><LoaderCircle className="spin" /></div> : evidence.data?.data ? <div className="panel-body"><img className="evidence-image" src={evidence.data.data} alt={`Screenshot evidence for ticket ${evidenceId}`} /></div> : <div className="empty-state">{evidence.error?.message ?? "No screenshot evidence is available."}</div>}</section>}
     {mode === "result" && result.isError && <div className="notice">This scan could not be found or is not available to your account. <Link className="text-link" href="/history">Back to history</Link></div>}
   </>;

@@ -1,9 +1,13 @@
 packages:
   - .
-patchedDependencies:
-  wouter@3.7.1: patches/wouter@3.7.1.patch
+
 overrides:
   tailwindcss>nanoid: 3.3.7
 onlyBuiltDependencies:
   - '@tailwindcss/oxide'
   - esbuild
+minimumReleaseAgeExclude:
+  - nodemailer@10.1.1
+allowBuilds:
+  core-js: set this to true or false
+  esbuild: set this to true or false

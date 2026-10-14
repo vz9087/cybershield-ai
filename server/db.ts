@@ -1,18 +1,32 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { randomUUID } from "node:crypto";
-import type { InsertUser, User, Scan, Ticket, Threat } from "../drizzle/schema";
+
 import {
   awarenessAttempts,
   emailOutbox,
   localCredentials,
   notifications,
+  passwordResetOtps,
+  passwordResetThrottle,
   scans,
   securityLogs,
   threats,
   tickets,
+  ticketResponses,
   users,
 } from "../drizzle/schema";
+
+import type {
+  InsertUser,
+  User,
+  Scan,
+  Ticket,
+  Threat,
+  TicketResponse,
+  PasswordResetOtp,
+} from "../drizzle/schema";
+
 import { hashPassword } from "./_core/passwords";
 import { ENV } from "./_core/env";
 
@@ -171,6 +185,7 @@ export async function upsertUser(user: Omit<InsertUser, "publicId"> & { publicId
       createdAt: now,
       updatedAt: now,
       lastSignedIn: now,
+      sessionsInvalidatedAt: null,
     };
     mem.users.set(id, newUser);
   }
@@ -280,7 +295,9 @@ export async function createLocalAccount(input: {
     createdAt: now,
     updatedAt: now,
     lastSignedIn: now,
+    sessionsInvalidatedAt: null,
   };
+
   mem.users.set(id, newUser);
 
   const credId = mem.localCredentials.size + 1;
@@ -749,7 +766,30 @@ export async function listSecurityLogs(): Promise<SecurityLog[]> {
   return [...mem.securityLogs].reverse().slice(0, 500);
 }
 
-export async function recordEmailIntent(recipient: string | null, subject: string, body?: string): Promise<void> {
+export async function recordEmailIntent(
+  recipient: string | null,
+  subject: string,
+  body?: string,
+  html?: string
+): Promise<void> {
+  // 1. Attempt actual delivery via SMTP
+  let sendStatus = "provider_not_configured";
+  let sendError: string | null = null;
+  try {
+    const { sendMail } = await import("./_core/mailer");
+    const result = await sendMail({ to: recipient, subject, text: body, html });
+    if (result.ok) {
+      sendStatus = "sent";
+    } else {
+      sendStatus = `failed:${result.reason}`;
+      sendError = result.reason;
+    }
+  } catch (err) {
+    sendStatus = `failed:${err instanceof Error ? err.message : "unknown"}`;
+    sendError = err instanceof Error ? err.message : "unknown";
+  }
+
+  // 2. Log the attempt in email_outbox regardless of outcome
   const db = await getDb();
   if (db) {
     try {
@@ -757,10 +797,12 @@ export async function recordEmailIntent(recipient: string | null, subject: strin
         recipient,
         subject: subject.slice(0, 240),
         body: body?.slice(0, 2000) ?? null,
-        status: "provider_not_configured",
+        status: sendStatus.slice(0, 40),
       });
       return;
-    } catch { }
+    } catch (err) {
+      console.error("[db] email_outbox insert failed:", err);
+    }
   }
 
   const id = mem.emailSeq++;
@@ -769,9 +811,11 @@ export async function recordEmailIntent(recipient: string | null, subject: strin
     recipient,
     subject: subject.slice(0, 240),
     body: body?.slice(0, 2000) ?? null,
-    status: "provider_not_configured",
+    status: sendStatus.slice(0, 40),
     createdAt: new Date(),
   });
+
+  if (sendError) console.error("[email] delivery failed:", sendError);
 }
 
 export async function listEmailIntents(): Promise<EmailRecord[]> {
@@ -806,12 +850,281 @@ export async function findThreatLike(indicator: string): Promise<Threat | undefi
   });
 }
 
+// ================================================================
+// TICKET RESPONSES (threading)
+// ================================================================
+
+export async function addTicketResponse(row: {
+  ticketId: number;
+  authorId: number;
+  authorRole: "user" | "admin";
+  message: string;
+  attachmentName?: string | null;
+  attachmentType?: string | null;
+  attachmentData?: string | null;
+}): Promise<number> {
+  const db = await getDb();
+  if (db) {
+    try {
+      const result = await db.insert(ticketResponses).values({
+        ticketId: row.ticketId,
+        authorId: row.authorId,
+        authorRole: row.authorRole,
+        message: row.message,
+        attachmentName: row.attachmentName ?? null,
+        attachmentType: row.attachmentType ?? null,
+        attachmentData: row.attachmentData ?? null,
+      });
+      return Number(result[0].insertId);
+    } catch (err) {
+      console.error("[db] addTicketResponse failed:", err);
+    }
+  }
+
+  // Memory fallback: append to a local map keyed by ticketId
+  const id = (mem as any).respSeq ? (mem as any).respSeq++ : ((mem as any).respSeq = 2, 1);
+  const store = (mem as any).ticketResponses ?? new Map<number, TicketResponse[]>();
+  const list = store.get(row.ticketId) ?? [];
+  list.push({
+    id,
+    ticketId: row.ticketId,
+    authorId: row.authorId,
+    authorRole: row.authorRole,
+    message: row.message,
+    attachmentName: row.attachmentName ?? null,
+    attachmentType: row.attachmentType ?? null,
+    attachmentData: row.attachmentData ?? null,
+    createdAt: new Date(),
+  } as TicketResponse);
+  store.set(row.ticketId, list);
+  (mem as any).ticketResponses = store;
+  return id;
+}
+
+export async function listTicketResponses(ticketId: number) {
+  const db = await getDb();
+  if (db) {
+    try {
+      return await db
+        .select({
+          id: ticketResponses.id,
+          ticketId: ticketResponses.ticketId,
+          authorId: ticketResponses.authorId,
+          authorRole: ticketResponses.authorRole,
+          message: ticketResponses.message,
+          attachmentName: ticketResponses.attachmentName,
+          attachmentType: ticketResponses.attachmentType,
+          hasAttachment: sql<number>`${ticketResponses.attachmentData} IS NOT NULL`,
+          createdAt: ticketResponses.createdAt,
+        })
+        .from(ticketResponses)
+        .where(eq(ticketResponses.ticketId, ticketId))
+        .orderBy(ticketResponses.createdAt);
+    } catch (err) {
+      console.error("[db] listTicketResponses failed:", err);
+    }
+  }
+
+  const store = (mem as any).ticketResponses as Map<number, TicketResponse[]> | undefined;
+  const list = store?.get(ticketId) ?? [];
+  return list.map(r => ({
+    id: r.id,
+    ticketId: r.ticketId,
+    authorId: r.authorId,
+    authorRole: r.authorRole,
+    message: r.message,
+    attachmentName: r.attachmentName,
+    attachmentType: r.attachmentType,
+    hasAttachment: r.attachmentData ? 1 : 0,
+    createdAt: r.createdAt,
+  }));
+}
+
+export async function getTicketResponseAttachment(responseId: number) {
+  const db = await getDb();
+  if (db) {
+    try {
+      const rows = await db
+        .select({
+          ticketId: ticketResponses.ticketId,
+          attachmentData: ticketResponses.attachmentData,
+          attachmentType: ticketResponses.attachmentType,
+          attachmentName: ticketResponses.attachmentName,
+        })
+        .from(ticketResponses)
+        .where(eq(ticketResponses.id, responseId))
+        .limit(1);
+      if (rows[0]) return rows[0];
+    } catch { /* fall through */ }
+  }
+
+  const store = (mem as any).ticketResponses as Map<number, TicketResponse[]> | undefined;
+  if (store) {
+    for (const list of store.values()) {
+      const found = list.find(r => r.id === responseId);
+      if (found) {
+        return {
+          ticketId: found.ticketId,
+          attachmentData: found.attachmentData,
+          attachmentType: found.attachmentType,
+          attachmentName: found.attachmentName,
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * Idempotently seeds the three designated authorized administrator accounts:
  * 1. Keerthi Manjunath Geddappanavar — karbasamamg@gmail.com
  * 2. Vishal VP — vishalvpurshan360@gmail.com
  * 3. Pooja N Annigere — annigerep@gmail.com
  */
+
+// ================================================================
+// PASSWORD RESET (OTP-based)
+// ================================================================
+
+export async function createPasswordResetOtp(row: {
+  userId: number;
+  email: string;
+  otpHash: string;
+  expiresAt: Date;
+}): Promise<number> {
+  const db = await getDb();
+  if (db) {
+    try {
+      const result = await db.insert(passwordResetOtps).values({
+        userId: row.userId,
+        email: row.email.toLowerCase(),
+        otpHash: row.otpHash,
+        expiresAt: row.expiresAt,
+      });
+      return Number(result[0].insertId);
+    } catch (err) {
+      console.error("[db] createPasswordResetOtp failed:", err);
+    }
+  }
+  // Memory fallback: not persisted
+  return 0;
+}
+
+export async function findActiveResetOtp(email: string, userId: number): Promise<PasswordResetOtp | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  try {
+    const rows = await db
+      .select()
+      .from(passwordResetOtps)
+      .where(
+        and(
+          eq(passwordResetOtps.email, email.toLowerCase()),
+          eq(passwordResetOtps.userId, userId),
+        )
+      )
+      .orderBy(desc(passwordResetOtps.createdAt))
+      .limit(5);
+    // Find first unconsumed, unexpired
+    const now = new Date();
+    return rows.find(r => !r.consumedAt && new Date(r.expiresAt) > now);
+  } catch (err) {
+    console.error("[db] findActiveResetOtp failed:", err);
+    return undefined;
+  }
+}
+
+export async function consumeResetOtp(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.update(passwordResetOtps).set({ consumedAt: new Date() }).where(eq(passwordResetOtps.id, id));
+  } catch (err) {
+    console.error("[db] consumeResetOtp failed:", err);
+  }
+}
+
+export async function incrementOtpAttempt(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.update(passwordResetOtps)
+      .set({ attemptCount: sql`${passwordResetOtps.attemptCount} + 1` })
+      .where(eq(passwordResetOtps.id, id));
+  } catch (err) {
+    console.error("[db] incrementOtpAttempt failed:", err);
+  }
+}
+
+export async function countRecentResetRequests(email: string, windowMs: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  try {
+    const since = new Date(Date.now() - windowMs);
+    const rows = await db
+      .select({ id: passwordResetThrottle.id })
+      .from(passwordResetThrottle)
+      .where(
+        and(
+          eq(passwordResetThrottle.email, email.toLowerCase()),
+          sql`${passwordResetThrottle.requestedAt} >= ${since}`,
+        )
+      );
+    return rows.length;
+  } catch (err) {
+    console.error("[db] countRecentResetRequests failed:", err);
+    return 0;
+  }
+}
+
+export async function logResetRequest(email: string, type: "request" | "resend"): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.insert(passwordResetThrottle).values({ email: email.toLowerCase(), type });
+  } catch (err) {
+    console.error("[db] logResetRequest failed:", err);
+  }
+}
+
+export async function invalidateUserSessions(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.update(users)
+      .set({ sessionsInvalidatedAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, userId));
+  } catch (err) {
+    console.error("[db] invalidateUserSessions failed:", err);
+  }
+}
+
+export async function getLocalCredentialByUserId(userId: number): Promise<LocalCred | undefined> {
+  const db = await getDb();
+  if (db) {
+    try {
+      const rows = await db.select().from(localCredentials).where(eq(localCredentials.userId, userId)).limit(1);
+      if (rows[0]) return rows[0];
+    } catch { /* fall through */ }
+  }
+  return Array.from(mem.localCredentials.values()).find(c => c.userId === userId);
+}
+
+export async function updatePassword(userId: number, newPasswordHash: string): Promise<void> {
+  const db = await getDb();
+  if (db) {
+    try {
+      await db.update(localCredentials)
+        .set({ passwordHash: newPasswordHash })
+        .where(eq(localCredentials.userId, userId));
+      return;
+    } catch (err) {
+      console.error("[db] updatePassword failed:", err);
+    }
+  }
+  const cred = Array.from(mem.localCredentials.values()).find(c => c.userId === userId);
+  if (cred) cred.passwordHash = newPasswordHash;
+}
 
 export async function seedAdminAccounts(): Promise<{ created: number; existing: number; total: number }> {
   let created = 0;

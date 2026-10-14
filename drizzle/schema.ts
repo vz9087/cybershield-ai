@@ -12,6 +12,7 @@ export const users = mysqlTable("users", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+  sessionsInvalidatedAt: timestamp("sessionsInvalidatedAt"),
 });
 
 export const scans = mysqlTable("scans", {
@@ -73,6 +74,40 @@ export const tickets = mysqlTable("tickets", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+
+export const ticketResponses = mysqlTable("ticket_responses", {
+  id: int("id").autoincrement().primaryKey(),
+  ticketId: int("ticketId").notNull(),
+  authorId: int("authorId").notNull(),
+  authorRole: mysqlEnum("authorRole", ["user", "admin"]).notNull(),
+  message: text("message").notNull(),
+  attachmentName: varchar("attachmentName", { length: 255 }),
+  attachmentType: varchar("attachmentType", { length: 100 }),
+  attachmentData: mediumtext("attachmentData"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const passwordResetOtps = mysqlTable("password_reset_otps", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  email: varchar("email", { length: 320 }).notNull(),
+  otpHash: varchar("otpHash", { length: 255 }).notNull(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  consumedAt: timestamp("consumedAt"),
+  attemptCount: int("attemptCount").notNull().default(0),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const passwordResetThrottle = mysqlTable("password_reset_throttle", {
+  id: int("id").autoincrement().primaryKey(),
+  email: varchar("email", { length: 320 }).notNull(),
+  requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+  type: varchar("type", { length: 40 }).notNull().default("request"),
+});
+
+export type PasswordResetOtp = typeof passwordResetOtps.$inferSelect;
+
+export type TicketResponse = typeof ticketResponses.$inferSelect;
 
 export const notifications = mysqlTable("notifications", {
   id: int("id").autoincrement().primaryKey(),
